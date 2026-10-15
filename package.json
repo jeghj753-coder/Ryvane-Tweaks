@@ -1,0 +1,48 @@
+{
+  "name": "ryvane-tweaks",
+  "version": "2.4.0",
+  "description": "Open-source Windows gaming performance utility",
+  "main": "main.js",
+  "author": "Ryvane",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win nsis --publish never",
+    "release": "electron-builder --win nsis --publish always"
+  },
+  "dependencies": {
+    "debug": "^4.3.4",
+    "electron-store": "^8.1.0",
+    "electron-updater": "^6.6.2",
+    "node-machine-id": "^1.1.12",
+    "regedit": "^5.1.2",
+    "sudo-prompt": "^9.2.1",
+    "systeminformation": "^5.21.11"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "gg.ryvane.tweaks",
+    "productName": "Ryvane Tweaks",
+    "asar": true,
+    "files": ["**/*", "!dist/**", "!release/**", "!*.zip"],
+    "win": {
+      "target": [{"target": "nsis", "arch": ["x64"]}],
+      "requestedExecutionLevel": "requireAdministrator",
+      "artifactName": "Ryvane-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Ryvane Tweaks",
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [{"provider":"github","owner":"jeghj753-coder","repo":"Ryvane-Tweaks"}]
+  }
+}
