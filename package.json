@@ -8,8 +8,8 @@
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder --win nsis --publish never",
-    "release": "electron-builder --win nsis --publish always"
+    "dist": "electron-builder --win nsis portable --publish never",
+    "release": "electron-builder --win nsis portable --publish always"
   },
   "dependencies": {
     "debug": "^4.3.4",
@@ -28,11 +28,13 @@
     "appId": "gg.ryvane.tweaks",
     "productName": "Ryvane Tweaks",
     "asar": true,
-    "files": ["**/*", "!dist/**", "!release/**", "!*.zip"],
+    "files": ["**/*", "!dist/**", "!release/**", "!*.zip", "!.bootstrap/**"],
     "win": {
-      "target": [{"target": "nsis", "arch": ["x64"]}],
-      "requestedExecutionLevel": "requireAdministrator",
-      "artifactName": "Ryvane-Setup-${version}.${ext}"
+      "target": [
+        {"target": "nsis", "arch": ["x64"]},
+        {"target": "portable", "arch": ["x64"]}
+      ],
+      "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {
       "oneClick": false,
@@ -41,7 +43,11 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Ryvane Tweaks",
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Ryvane-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Ryvane-Tweaks-${version}.${ext}"
     },
     "publish": [{"provider":"github","owner":"jeghj753-coder","repo":"Ryvane-Tweaks"}]
   }
