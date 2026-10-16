@@ -1,1 +1,3 @@
-PLACEHOLDER
+// Ryvane tweak engine source is published in the managed tweak catalog under source/chunks/electron/managedTweaks.js.part01-04.txt.
+// The original packaged tweaks.js is larger than the connector write limit and is being migrated in chunks.
+// This file intentionally contains no executable placeholder code.
