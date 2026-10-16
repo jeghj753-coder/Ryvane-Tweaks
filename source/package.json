@@ -1,0 +1,26 @@
+{
+  "name": "ryvane-tweaks",
+  "version": "3.3.0",
+  "private": true,
+  "main": "electron/main.js",
+  "homepage": "./",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0",
+    "systeminformation": "^5.22.0",
+    "axios": "^1.6.0",
+    "electron-store": "^8.1.0",
+    "node-machine-id": "^1.1.12",
+    "lucide-react": "^0.383.0",
+    "framer-motion": "^11.0.0",
+    "electron-updater": "^6.1.7",
+    "recharts": "^2.15.0"
+  },
+  "browserslist": {
+    "production": [">0.2%", "not dead"],
+    "development": ["last 1 chrome version"]
+  },
+  "description": "Ryvane Tweaks - Windows gaming optimizer to boost FPS, reduce input delay, and improve PC performance.",
+  "author": "Ryvane"
+}
