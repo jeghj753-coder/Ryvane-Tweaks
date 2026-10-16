@@ -1,0 +1,259 @@
+const { app, BrowserWindow, ipcMain, shell } = require('electron')
+
+// Disable hardware acceleration to prevent VM / network-share GPU crashes
+try {
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu')
+  app.commandLine.appendSwitch('disable-gpu-compositing')
+  app.commandLine.appendSwitch('no-sandbox')
+  app.commandLine.appendSwitch('disable-software-rasterizer')
+} catch {}
+
+const { autoUpdater } = require('electron-updater')
+const path = require('path')
+const { exec, execSync } = require('child_process')
+const fs = require('fs')
+const os = require('os')
+const crypto = require('crypto')
+const dns = require('dns').promises
+
+process.on('uncaughtException', (err) => {
+  try {
+    const logPath = path.join(app.getPath('userData') || os.tmpdir(), 'tweakshift-crash.log')
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] Uncaught Exception: ${err?.stack || err}\n`)
+  } catch {}
+})
+
+process.on('unhandledRejection', (err) => {
+  try {
+    const logPath = path.join(app.getPath('userData') || os.tmpdir(), 'tweakshift-crash.log')
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] Unhandled Rejection: ${err?.stack || err}\n`)
+  } catch {}
+})
+let si
+try { si = require('systeminformation') } catch { si = null }
+
+let Store
+try { Store = require('electron-store') } catch { Store = null }
+
+let machineIdSync
+try { machineIdSync = require('node-machine-id').machineIdSync } catch { machineIdSync = null }
+
+const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+let mainWindow
+let adminStatusCached = false
+let latestUpdateStatus = null
+
+const TWEAKSHIFT_PRODUCT_KEY = 'tweakshift_classic'
+const TWEAKSHIFT_AUTH_API_URL = (process.env.TWEAKSHIFT_AUTH_API_URL || process.env.PUBLIC_API_URL || 'https://tweakshift-auth-api.onrender.com').replace(/\/+$/, '')
+const TOOL_OAUTH_PROTOCOL = 'tweakshift-classic'
+const TOOL_OAUTH_CALLBACK_URL = `${TOOL_OAUTH_PROTOCOL}://auth-callback`
+let pendingToolOAuthCode = null
+
+function emitUpdateStatus(payload) {
+  latestUpdateStatus = payload
+  mainWindow?.webContents.send('update-status', payload)
+}
+
+function formatUpdateBytes(bytes) {
+  const value = Number(bytes || 0)
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = value
+  let unit = 0
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024
+    unit += 1
+  }
+  const digits = size >= 100 || unit === 0 ? 0 : size >= 10 ? 1 : 2
+  return `${size.toFixed(digits)} ${units[unit]}`
+}
+
+function buildDownloadProgressPayload(progress) {
+  const percent = Math.max(0, Math.min(100, Math.round(Number(progress?.percent || 0))))
+  const transferred = Number(progress?.transferred || 0)
+  const total = Number(progress?.total || 0)
+  const bytesPerSecond = Number(progress?.bytesPerSecond || progress?.bps || 0)
+  const speedText = bytesPerSecond > 0 ? `${formatUpdateBytes(bytesPerSecond)}/s` : ''
+  const transferredText = formatUpdateBytes(transferred)
+  const totalText = total > 0 ? formatUpdateBytes(total) : ''
+  const sizeText = totalText ? `${transferredText} of ${totalText}` : transferredText
+  const message = `Downloading update... ${percent}%${speedText ? ` • ${speedText}` : ''}${sizeText ? ` • ${sizeText}` : ''}`
+
+  return {
+    status: 'downloading',
+    message,
+    percent,
+    transferred,
+    total,
+    bytesPerSecond,
+    speedText,
+    transferredText,
+    totalText,
+    sizeText,
+  }
+}
+
+function handleToolOAuthUrl(rawUrl) {
+  try {
+    if (!rawUrl || !String(rawUrl).startsWith(`${TOOL_OAUTH_PROTOCOL}://`)) return false
+    const parsed = new URL(String(rawUrl))
+    const code = parsed.searchParams.get('code') || ''
+    const provider = parsed.searchParams.get('provider') || ''
+    if (!code) return false
+    const payload = { code, provider }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+      mainWindow.webContents.send('tool-oauth-code', payload)
+    } else {
+      pendingToolOAuthCode = payload
+    }
+    return true
+  } catch (error) {
+    console.error('[Tool OAuth URL Error]', error)
+    return false
+  }
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const urlArg = (argv || []).find(arg => String(arg).startsWith(`${TOOL_OAUTH_PROTOCOL}://`))
+    if (urlArg) handleToolOAuthUrl(urlArg)
+    else if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  handleToolOAuthUrl(url)
+})
+
+function getMemoryFast() {
+  const totalMem = os.totalmem() || 1
+  const freeMem = os.freemem() || 0
+  const usedMem = Math.max(0, totalMem - freeMem)
+  return { totalMem, usedMem, ram: Math.min(100, Math.round((usedMem / totalMem) * 100)) }
+}
+
+const LICENSE_SERVER_URL = (
+  process.env.LICENSE_SERVER_URL || 'https://tweakshift-license-server.onrender.com'
+).replace(/\/+$/, '')
+
+let FALLBACK_STORE_PATH = path.join(os.homedir(), 'tweakshift-license.json')
+
+function fallbackGet(key) {
+  try {
+    if (!fs.existsSync(FALLBACK_STORE_PATH)) return undefined
+    const data = JSON.parse(fs.readFileSync(FALLBACK_STORE_PATH, 'utf8'))
+    return data[key]
+  } catch { return undefined }
+}
+
+function fallbackSet(key, value) {
+  try {
+    let data = {}
+    if (fs.existsSync(FALLBACK_STORE_PATH)) data = JSON.parse(fs.readFileSync(FALLBACK_STORE_PATH, 'utf8'))
+    data[key] = value
+    fs.writeFileSync(FALLBACK_STORE_PATH, JSON.stringify(data, null, 2), 'utf8')
+    return true
+  } catch (e) { return false }
+}
+
+function fallbackDelete(key) {
+  try {
+    if (!fs.existsSync(FALLBACK_STORE_PATH)) return true
+    const data = JSON.parse(fs.readFileSync(FALLBACK_STORE_PATH, 'utf8'))
+    delete data[key]
+    fs.writeFileSync(FALLBACK_STORE_PATH, JSON.stringify(data, null, 2), 'utf8')
+    return true
+  } catch { return false }
+}
+
+const store = Store
+  ? new Store({ name: 'tweakshift-license', clearInvalidConfig: true, defaults: { licenseStatus: null } })
+  : null
+
+const licenseStore = {
+  get: (key) => (store ? store.get(key) : fallbackGet(key)),
+  set: (key, value) => { if (store) store.set(key, value); else fallbackSet(key, value) },
+  delete: (key) => { if (store) store.delete(key); else fallbackDelete(key) },
+  get path() { return store?.path || FALLBACK_STORE_PATH }
+}
+
+let FALLBACK_STATE_PATH = path.join(os.homedir(), 'tweakshift-ui-state.json')
+const stateStoreRaw = Store
+  ? new Store({ name: 'tweakshift-ui-state', clearInvalidConfig: true, defaults: { localStorage: {} } })
+  : null
+
+function readFallbackState() {
+  try { return fs.existsSync(FALLBACK_STATE_PATH) ? JSON.parse(fs.readFileSync(FALLBACK_STATE_PATH, 'utf8')) : { localStorage: {} } }
+  catch { return { localStorage: {} } }
+}
+function writeFallbackState(data) {
+  try { fs.mkdirSync(path.dirname(FALLBACK_STATE_PATH), { recursive: true }); fs.writeFileSync(FALLBACK_STATE_PATH, JSON.stringify(data, null, 2), 'utf8'); return true }
+  catch { return false }
+}
+
+const uiStateStore = {
+  getAll: () => {
+    try { return stateStoreRaw ? (stateStoreRaw.get('localStorage') || {}) : (readFallbackState().localStorage || {}) }
+    catch { return {} }
+  },
+  setKey: (key, value) => {
+    try {
+      const current = uiStateStore.getAll()
+      current[String(key)] = String(value)
+      if (stateStoreRaw) stateStoreRaw.set('localStorage', current)
+      else writeFallbackState({ localStorage: current })
+      return true
+    } catch { return false }
+  },
+  deleteKey: (key) => {
+    try {
+      const current = uiStateStore.getAll()
+      delete current[String(key)]
+      if (stateStoreRaw) stateStoreRaw.set('localStorage', current)
+      else writeFallbackState({ localStorage: current })
+      return true
+    } catch { return false }
+  },
+  merge: (data = {}) => {
+    try {
+      const current = uiStateStore.getAll()
+      for (const [key, value] of Object.entries(data || {})) current[String(key)] = String(value)
+      if (stateStoreRaw) stateStoreRaw.set('localStorage', current)
+      else writeFallbackState({ localStorage: current })
+      return true
+    } catch { return false }
+  },
+  get path() { return stateStoreRaw?.path || FALLBACK_STATE_PATH }
+}
+
+function isAdmin() { return true }
+function relaunchAsAdmin() { return true }
+
+function runPS(scriptContent) {
+  return new Promise((resolve) => {
+    const tmpFile = path.join(os.tmpdir(), `ts_${Date.now()}.ps1`)
+    const bom = Buffer.from([0xef, 0xbb, 0xbf])
+    const body = `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force\r\n${scriptContent}\r\n`
+    fs.writeFileSync(tmpFile, Buffer.concat([bom, Buffer.from(body, 'utf8')]))
+
+    exec(
+      `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "${tmpFile}"`,
+      { timeout: 60000, windowsHide: true },
+      (error, stdout, stderr) => {
+        try { fs.unlinkSync(tmpFile) } catch {}
+        if (error && error.code !== 0) {
+          resolve({ success: false, message: `Error: ${(stderr || error.message || '').slice(0, 200)}`, stdout: stdout || '', stderr: stderr || '' })
+        } else {
+          resolve({ success: true, stdout: stdout || '', output: stdout || '' })
