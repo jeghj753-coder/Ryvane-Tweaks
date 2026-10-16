@@ -1,0 +1,190 @@
+const { spawn, execFile } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const ROOT_DIR = process.platform === 'win32'
+  ? path.join(process.env.ProgramData || 'C:\\ProgramData', 'Ryvane', 'ManagedTweaks')
+  : path.join(os.tmpdir(), 'Ryvane', 'ManagedTweaks');
+const BACKUP_DIR = path.join(ROOT_DIR, 'Backups');
+
+function ensureDir(dir) { try { fs.mkdirSync(dir, { recursive: true }); } catch {} }
+function safeId(id) { return String(id || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96); }
+function psQuote(s) { return String(s ?? '').replace(/'/g, "''"); }
+function makeTempName(prefix, ext) {
+  return path.join(os.tmpdir(), `${prefix}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2,8)}${ext}`);
+}
+function killProcessTree(pid) {
+  if (!pid || process.platform !== 'win32') return;
+  try { execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => {}); } catch {}
+}
+function runChild(file, args, timeout = 60000) {
+  return new Promise(resolve => {
+    let stdout = '', stderr = '', settled = false, timedOut = false;
+    let child;
+    try {
+      child = spawn(file, args, { windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) { return resolve({ success: false, output: e?.message || String(e) }); }
+    child.stdout?.on('data', d => stdout += d.toString());
+    child.stderr?.on('data', d => stderr += d.toString());
+    const timer = setTimeout(() => { timedOut = true; killProcessTree(child.pid); try { child.kill('SIGKILL'); } catch {} }, timeout);
+    child.on('error', e => { if (settled) return; settled = true; clearTimeout(timer); resolve({ success: false, output: e?.message || String(e), stdout, stderr }); });
+    child.on('close', code => { if (settled) return; settled = true; clearTimeout(timer); resolve({ success: !timedOut && code === 0, output: (stdout || stderr || '').trim(), stdout, stderr, code, timedOut }); });
+  });
+}
+function runPS(script, timeout = 60000) {
+  const file = makeTempName('ts_managed', '.ps1');
+  const body = `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force\r\n$ProgressPreference='SilentlyContinue'\r\n$ErrorActionPreference='SilentlyContinue'\r\n${script}\r\n`;
+  fs.writeFileSync(file, Buffer.concat([Buffer.from([0xef,0xbb,0xbf]), Buffer.from(body, 'utf8')]));
+  return runChild('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',file], timeout)
+    .then(res => { try { fs.unlinkSync(file); } catch {} return res; });
+}
+
+const RISK = { safe: 'Safe', moderate: 'Moderate', advanced: 'Advanced', experimental: 'Experimental', manual: 'Manual' };
+
+async function runFirmwareCompatibilityScan() {
+  const script = `
+$ErrorActionPreference='SilentlyContinue'
+function YesNo($v){ if($null -eq $v){ return 'Unknown' }; if($v){ return 'Yes' } else { return 'No' } }
+$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,Manufacturer,NumberOfCores,NumberOfLogicalProcessors,VirtualizationFirmwareEnabled
+$board = Get-CimInstance Win32_BaseBoard | Select-Object -First 1 Manufacturer,Product,Version,SerialNumber
+$bios = Get-CimInstance Win32_BIOS | Select-Object -First 1 Manufacturer,SMBIOSBIOSVersion,ReleaseDate
+$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 Manufacturer,Model,SystemType,HypervisorPresent
+$fwType = 'Unknown'
+try {
+  $ci = Get-ComputerInfo -Property BiosFirmwareType -EA Stop
+  if($ci.BiosFirmwareType){ $fwType = [string]$ci.BiosFirmwareType }
+} catch {}
+if($fwType -eq 'Unknown' -or [string]::IsNullOrWhiteSpace($fwType)){
+  try {
+    $fwRaw = (Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control' -Name PEFirmwareType -EA Stop).PEFirmwareType
+    if($fwRaw -eq 2){ $fwType = 'UEFI' } elseif($fwRaw -eq 1){ $fwType = 'Legacy BIOS' }
+  } catch {}
+}
+$secureBoot = 'Unavailable'
+try {
+  $sb = Confirm-SecureBootUEFI -EA Stop
+  $secureBoot = if($sb){ 'Enabled' } else { 'Disabled' }
+  if($fwType -eq 'Unknown'){ $fwType = 'UEFI' }
+} catch {
+  $msg = $_.Exception.Message
+  if($msg -match 'not supported|not support|Cmdlet not supported'){ if($fwType -eq 'Unknown'){ $fwType = 'Legacy BIOS' } }
+  $secureBoot = 'Unavailable'
+}
+$deviceGuard = Get-CimInstance -Namespace root\\Microsoft\\Windows\\DeviceGuard -ClassName Win32_DeviceGuard -EA SilentlyContinue
+$bcd = (& bcdedit.exe /enum '{current}' 2>&1) -join [Environment]::NewLine
+$bitlocker = 'Unknown'
+try { $bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -EA Stop; $bitlocker = $bl.ProtectionStatus.ToString() } catch {}
+$firmwareAccess = if($fwType -eq 'UEFI') { 'Readable check only - vendor write profile required for BIOS tuning' } else { 'Not available on Legacy BIOS boot' }
+$supportedWindowsControls = @(
+  @{ id='ts-elam-toggle'; name='ELAM boot option'; support='Supported by BCD when accepted by this Windows build'; reversible='Backup/deletevalue restore'; restart=$true },
+  @{ id='ts-isolated-context-toggle'; name='Isolated context boot option'; support='Attempted through BCD; unsupported builds will be blocked'; reversible='Backup/deletevalue restore'; restart=$true },
+  @{ id='ts-inmemory-kernel-toggle'; name='Kernel mitigation option'; support='Attempted through BCD; unsupported builds will be blocked'; reversible='Backup/deletevalue restore'; restart=$true },
+  @{ id='ts-hypervisor-off'; name='Hypervisor launch'; support='Supported BCD option'; reversible='Backup/deletevalue restore'; restart=$true },
+  @{ id='ts-vbs-off'; name='VBS policy/BCD'; support='Windows policy + BCD where available'; reversible='Registry/BCD backup restore'; restart=$true }
+)
+$firmwareControls = @(
+  @{ id='ts-bios-cstates'; name='CPU C-States'; status='Vendor profile required'; canToggle=$false; reason='Motherboard-specific BIOS option, not a universal Windows value.' },
+  @{ id='ts-bios-package-cstate'; name='Package C-State Limit'; status='Vendor profile required'; canToggle=$false; reason='Motherboard-specific BIOS option.' },
+  @{ id='ts-bios-c1e'; name='C1E Support'; status='Vendor profile required'; canToggle=$false; reason='Motherboard-specific BIOS option.' },
+  @{ id='ts-bios-pcie-clock-gating'; name='PCIe Clock Gating'; status='Vendor profile required'; canToggle=$false; reason='Motherboard-specific firmware option.' },
+  @{ id='ts-bios-energy-efficient-pstate'; name='Energy Efficient P-State'; status='Vendor profile required'; canToggle=$false; reason='Motherboard-specific firmware option.' },
+  @{ id='ts-bios-aspm'; name='ASPM'; status='Windows-side alternative available'; canToggle=$false; reason='Firmware ASPM is BIOS-specific. Windows PCIe Link State is handled in Power settings.' },
+  @{ id='ts-bios-ltr'; name='LTR'; status='Vendor profile required'; canToggle=$false; reason='Motherboard-specific firmware option.' },
+  @{ id='ts-bios-race-to-halt'; name='Race To Halt'; status='Vendor profile required'; canToggle=$false; reason='Motherboard-specific firmware option.' },
+  @{ id='ts-bios-xhci-handoff'; name='XHCI Hand-off'; status='Vendor profile required'; canToggle=$false; reason='Motherboard-specific BIOS option.' },
+  @{ id='ts-bios-virtualization'; name='VT-x / SVM firmware virtualization'; status='Firmware only'; canToggle=$false; reason='Windows can disable Hypervisor/VBS, but CPU virtualization itself is controlled in firmware.' },
+  @{ id='ts-bios-pci-delay'; name='PCI Delay Optimization'; status='Vendor profile required'; canToggle=$false; reason='Not a universal Windows value.' }
+)
+$result = [ordered]@{
+  success = $true
+  scannedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  firmwareType = $fwType
+  secureBoot = $secureBoot
+  firmwareAccess = $firmwareAccess
+  bitLocker = $bitlocker
+  cpu = [ordered]@{ name=$cpu.Name; manufacturer=$cpu.Manufacturer; cores=$cpu.NumberOfCores; threads=$cpu.NumberOfLogicalProcessors; virtualizationFirmwareEnabled=(YesNo $cpu.VirtualizationFirmwareEnabled) }
+  motherboard = [ordered]@{ manufacturer=$board.Manufacturer; product=$board.Product; version=$board.Version; system=$cs.Model }
+  bios = [ordered]@{ manufacturer=$bios.Manufacturer; version=$bios.SMBIOSBIOSVersion; releaseDate=$bios.ReleaseDate }
+  hypervisorPresent = (YesNo $cs.HypervisorPresent)
+  bcdDetected = ($bcd.Length -gt 0)
+  windowsControls = $supportedWindowsControls
+  firmwareControls = $firmwareControls
+  summary = if($fwType -eq 'UEFI') { 'UEFI detected. Windows-level boot/security controls can be managed safely with backup. Direct BIOS tuning requires a supported vendor firmware profile.' } else { 'Legacy BIOS boot detected. UEFI firmware variables are not available from Windows.' }
+}
+$result | ConvertTo-Json -Depth 8
+`;
+  const res = await runPS(script, 45000);
+  if (!res.success) return { success: false, message: res.output || 'Firmware scan failed.' };
+  const raw = String(res.output || '').trim();
+  try { return JSON.parse(raw); } catch {}
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(raw.slice(start, end + 1)); } catch {}
+  }
+  return { success: false, message: 'Firmware scan returned unreadable data.', raw };
+}
+
+
+const TWEAKS = {
+  // Windows Control / Appearance
+  'ts-dark-mode': { title: 'Enable Dark Mode', method: 'ps', restart: false, risk: 'safe',
+    apply: "New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Force | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name AppsUseLightTheme -Type DWord -Value 0; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name SystemUsesLightTheme -Type DWord -Value 0; Write-Output 'Dark mode enabled.'",
+    revert: "New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Force | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name AppsUseLightTheme -Type DWord -Value 1; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name SystemUsesLightTheme -Type DWord -Value 1; Write-Output 'Light mode restored.'" },
+  'ts-transparency-off': { title: 'Disable Transparency', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize','EnableTransparency','REG_DWORD',0]]},
+  'ts-classic-alt-tab': { title: 'Classic Alt+Tab', method: 'registry', risk: 'moderate', entries: [['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\Explorer','AltTabSettings','REG_DWORD',1]]},
+  'ts-disable-notification-center': { title: 'Disable Notification Center', method: 'registry', risk: 'moderate', restart: true, entries: [['HKCU','Software\\Policies\\Microsoft\\Windows\\Explorer','DisableNotificationCenter','REG_DWORD',1]]},
+  'ts-show-file-ext': { title: 'Show File Extensions', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced','HideFileExt','REG_DWORD',0]]},
+  'ts-hide-home-explorer': { title: 'Hide Home in Explorer', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced','LaunchTo','REG_DWORD',1]]},
+  'ts-hide-gallery-explorer': { title: 'Hide Gallery in Explorer', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Classes\\CLSID\\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}','System.IsPinnedToNameSpaceTree','REG_DWORD',0]]},
+  'ts-hide-network-explorer': { title: 'Hide Network in Explorer', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Classes\\CLSID\\{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}\\ShellFolder','Attributes','REG_DWORD',2962489444]]},
+  'ts-classic-context-menu': { title: 'Classic Right-Click Menu', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32','(default)','REG_SZ','']]},
+  'ts-hide-share-context': { title: 'Hide Share Context Menu', method: 'registry', risk: 'safe', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked','{e2bf9676-5f8f-435c-97eb-11607a5bedf7}','REG_SZ','Share']]} ,
+  'ts-hide-restore-previous': { title: 'Hide Restore Previous Versions', method: 'registry', risk: 'safe', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked','{596AB062-B4D2-4215-9F74-E9109B0A8153}','REG_SZ','Restore Previous Versions']]},
+  'ts-hide-include-library': { title: 'Hide Include in Library', method: 'registry', risk: 'safe', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked','{3dad6c5d-2167-4cae-9914-f99e41c12cfa}','REG_SZ','Include in Library']]},
+  'ts-restart-explorer': { title: 'Restart Explorer', method: 'action', risk: 'safe', action: 'restartExplorer' },
+
+  // Performance Core / Basic
+  'ts-game-dvr-off': { title: 'Disable Game DVR & Game Bar', method: 'registry', risk: 'safe', entries: [
+    ['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR','AppCaptureEnabled','REG_DWORD',0],
+    ['HKCU','System\\GameConfigStore','GameDVR_Enabled','REG_DWORD',0],
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR','AllowGameDVR','REG_DWORD',0],
+    ['HKCU','Software\\Microsoft\\GameBar','ShowStartupPanel','REG_DWORD',0],
+    ['HKCU','Software\\Microsoft\\GameBar','UseNexusForGameBarEnabled','REG_DWORD',0]
+  ]},
+  'ts-game-mode-on': { title: 'Game Mode Control', method: 'registry', risk: 'safe', entries: [
+    ['HKCU','Software\\Microsoft\\GameBar','AutoGameModeEnabled','REG_DWORD',1],
+    ['HKCU','Software\\Microsoft\\GameBar','AllowAutoGameMode','REG_DWORD',1]
+  ]},
+  'ts-hags-on': { title: 'Hardware GPU Scheduling', method: 'registry', risk: 'moderate', restart: true, entries: [['HKLM','SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers','HwSchMode','REG_DWORD',2]]},
+  'ts-hags-off': { title: 'Hardware GPU Scheduling Off', method: 'registry', risk: 'moderate', restart: true, entries: [['HKLM','SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers','HwSchMode','REG_DWORD',1]]},
+  'ts-menu-delay-zero': { title: 'Instant Menu Response', method: 'registry', risk: 'safe', entries: [['HKCU','Control Panel\\Desktop','MenuShowDelay','REG_SZ','0']]},
+  'ts-fast-user-switching': { title: 'Faster User Switching', method: 'registry', risk: 'safe', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System','DelayedDesktopSwitchTimeout','REG_DWORD',0]]},
+  'ts-audio-ducking-off': { title: 'Stop Auto Volume Ducking', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Multimedia\\Audio','UserDuckingPreference','REG_DWORD',3]]},
+  'ts-sticky-filter-prompts-off': { title: 'Disable Sticky / Filter Key Prompts', method: 'registry', risk: 'safe', entries: [
+    ['HKCU','Control Panel\\Accessibility\\StickyKeys','Flags','REG_SZ','506'],
+    ['HKCU','Control Panel\\Accessibility\\Keyboard Response','Flags','REG_SZ','122'],
+    ['HKCU','Control Panel\\Accessibility\\ToggleKeys','Flags','REG_SZ','58']
+  ]},
+  'ts-disable-memory-compression': { title: 'Disable Memory Compression', method: 'ps', risk: 'moderate', apply: 'Disable-MMAgent -MemoryCompression -ErrorAction SilentlyContinue; Write-Output "Memory Compression disabled."', revert: 'Enable-MMAgent -MemoryCompression -ErrorAction SilentlyContinue; Write-Output "Memory Compression restored."' },
+  'ts-disable-page-combining': { title: 'Disable Page Combining', method: 'ps', risk: 'moderate', apply: 'Disable-MMAgent -PageCombining -ErrorAction SilentlyContinue; Write-Output "Page Combining disabled."', revert: 'Enable-MMAgent -PageCombining -ErrorAction SilentlyContinue; Write-Output "Page Combining restored."' },
+  'ts-disable-hibernation': { title: 'Disable Hibernation', method: 'cmd', risk: 'moderate', restart: false, apply: 'powercfg.exe /hibernate off', revert: 'powercfg.exe /hibernate on' },
+  'ts-fast-startup-off': { title: 'Disable Fast Startup', method: 'registry', risk: 'moderate', entries: [['HKLM','SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power','HiberbootEnabled','REG_DWORD',0]]},
+  'ts-dynamic-tick-off': { title: 'Disable Dynamic Tick', method: 'bcd', risk: 'advanced', restart: true, bcd: [['disabledynamictick','yes']]},
+  'ts-platform-clock-off': { title: 'Disable HPET Platform Clock', method: 'bcdDelete', risk: 'experimental', restart: true, bcdDelete: ['useplatformclock']},
+  'ts-platform-tick-on': { title: 'Enable Platform Tick', method: 'bcd', risk: 'experimental', restart: true, bcd: [['useplatformtick','yes']]},
+
+  // System Control
+  'ts-block-wu-drivers': { title: 'Block Windows Update Driver Installs', method: 'registry', risk: 'moderate', entries: [
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate','ExcludeWUDriversInQualityUpdate','REG_DWORD',1],
+    ['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\DriverSearching','SearchOrderConfig','REG_DWORD',0]
+  ]},
+  'ts-manual-windows-update': { title: 'Manual Windows Update Mode', method: 'registry', risk: 'moderate', entries: [['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU','NoAutoUpdate','REG_DWORD',1]]},
+  'ts-store-auto-download-off': { title: 'Stop Store Auto Downloads', method: 'registry', risk: 'moderate', entries: [['HKLM','SOFTWARE\\Policies\\Microsoft\\WindowsStore','AutoDownload','REG_DWORD',2]]},
+  'ts-background-apps-off': { title: 'Block Background Store Apps', method: 'registry', risk: 'moderate', entries: [
+    ['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\BackgroundAccessApplications','GlobalUserDisabled','REG_DWORD',1],
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy','LetAppsRunInBackground','REG_DWORD',2]
+  ]},
+  'ts-widgets-off': { title: 'Remove Widgets / News Feed', method: 'registry', risk: 'safe', entries: [
+    ['HKCU','Software\\Microsoft\\Windows\\CurrentVers
