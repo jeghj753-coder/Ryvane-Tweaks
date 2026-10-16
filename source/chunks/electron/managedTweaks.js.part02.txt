@@ -1,0 +1,161 @@
+ion\Explorer\Advanced','TaskbarDa','REG_DWORD',0],
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Dsh','AllowNewsAndInterests','REG_DWORD',0]
+  ]},
+  'ts-onedrive-disable-sync': { title: 'Pause OneDrive Sync', method: 'registryAction', risk: 'moderate', entries: [['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\OneDrive','DisableFileSyncNGSC','REG_DWORD',1]], actionBefore: 'taskkill /f /im OneDrive.exe 2>$null | Out-Null' },
+  'ts-scheduled-maintenance-off': { title: 'Stop Scheduled Maintenance', method: 'registry', risk: 'moderate', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\Maintenance','MaintenanceDisabled','REG_DWORD',1]]},
+  'ts-sleep-study-off': { title: 'Disable Sleep Study Logging', method: 'sleepStudy', risk: 'moderate', restart: false },
+
+  // Privacy
+  'ts-telemetry-limit': { title: 'Limit Windows Telemetry', method: 'registryService', risk: 'moderate', entries: [['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection','AllowTelemetry','REG_DWORD',0]], services: ['DiagTrack','dmwappushservice']},
+  'ts-ceip-tasks-off': { title: 'Disable CEIP Tasks', method: 'tasks', risk: 'safe', tasks: [
+    ['\\Microsoft\\Windows\\Customer Experience Improvement Program\\','Consolidator'],
+    ['\\Microsoft\\Windows\\Customer Experience Improvement Program\\','UsbCeip'],
+    ['\\Microsoft\\Windows\\Application Experience\\','Microsoft Compatibility Appraiser'],
+    ['\\Microsoft\\Windows\\Application Experience\\','ProgramDataUpdater']
+  ]},
+  'ts-feedback-off': { title: 'Stop Feedback Requests', method: 'registry', risk: 'safe', entries: [['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection','DoNotShowFeedbackNotifications','REG_DWORD',1]]},
+  'ts-app-launch-tracking-off': { title: 'Stop App Launch Tracking', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced','Start_TrackProgs','REG_DWORD',0]]},
+  'ts-activity-history-off': { title: 'Disable Activity History', method: 'registry', risk: 'safe', entries: [
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\System','EnableActivityFeed','REG_DWORD',0],
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\System','PublishUserActivities','REG_DWORD',0],
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\System','UploadUserActivities','REG_DWORD',0]
+  ]},
+  'ts-error-reporting-off': { title: 'Disable Error Report Uploads', method: 'registryService', risk: 'moderate', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting','Disabled','REG_DWORD',1]], services: ['WerSvc']},
+  'ts-ad-id-off': { title: 'Reset & Disable Ad ID', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo','Enabled','REG_DWORD',0]]},
+  'ts-language-header-off': { title: 'Hide Language Preference Header', method: 'registry', risk: 'safe', entries: [['HKCU','Control Panel\\International\\User Profile','HttpAcceptLanguageOptOut','REG_DWORD',1]]},
+  'ts-typing-insights-off': { title: 'Stop Typing Personalization', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Input\\TIPC','Enabled','REG_DWORD',0]]},
+  'ts-speech-data-off': { title: 'Disable Online Speech Collection', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Speech_OneCore\\Settings\\OnlineSpeechPrivacy','HasAccepted','REG_DWORD',0]]},
+  'ts-ink-handwriting-off': { title: 'Stop Ink & Handwriting Data', method: 'registry', risk: 'safe', entries: [
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\InputPersonalization','AllowInputPersonalization','REG_DWORD',0],
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\InputPersonalization','RestrictImplicitInkCollection','REG_DWORD',1],
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\InputPersonalization','RestrictImplicitTextCollection','REG_DWORD',1]
+  ]},
+  'ts-search-suggestions-off': { title: 'Disable Search Suggestions', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Policies\\Microsoft\\Windows\\Explorer','DisableSearchBoxSuggestions','REG_DWORD',1]]},
+  'ts-search-highlights-off': { title: 'Disable Search Highlights', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\SearchSettings','IsDynamicSearchBoxEnabled','REG_DWORD',0]]},
+  'ts-tailored-experiences-off': { title: 'Disable Tailored Experiences', method: 'registry', risk: 'safe', entries: [['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\Privacy','TailoredExperiencesWithDiagnosticDataEnabled','REG_DWORD',0]]},
+  'ts-consumer-features-off': { title: 'Disable Consumer Features', method: 'registry', risk: 'safe', entries: [['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent','DisableWindowsConsumerFeatures','REG_DWORD',1]]},
+  'ts-cloud-content-off': { title: 'Disable Cloud Content Optimization', method: 'registry', risk: 'safe', entries: [
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent','DisableCloudOptimizedContent','REG_DWORD',1],
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent','DisableSoftLanding','REG_DWORD',1]
+  ]},
+  'ts-online-tips-off': { title: 'Disable Online Tips', method: 'registry', risk: 'safe', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer','AllowOnlineTips','REG_DWORD',0]]},
+  'ts-location-access-off': { title: 'Deny Location Access', method: 'registry', risk: 'moderate', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location','Value','REG_SZ','Deny']]},
+  'ts-app-diagnostics-off': { title: 'Deny App Diagnostics Access', method: 'registry', risk: 'safe', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\appDiagnostics','Value','REG_SZ','Deny']]},
+  'ts-user-notifications-access-off': { title: 'Deny User Notifications Access', method: 'registry', risk: 'moderate', entries: [['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\userNotificationListener','Value','REG_SZ','Deny']]},
+  'ts-spotlight-lock-off': { title: 'Disable Rotating Lock Screen', method: 'registry', risk: 'safe', entries: [
+    ['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager','RotatingLockScreenEnabled','REG_DWORD',0],
+    ['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager','RotatingLockScreenOverlayEnabled','REG_DWORD',0]
+  ]},
+
+  // Network
+  'ts-tcp-heuristics-off': { title: 'Disable TCP Scaling Heuristics', method: 'cmd', risk: 'advanced', apply: 'netsh int tcp set heuristics disabled', revert: 'netsh int tcp set heuristics default' },
+  'ts-netbios-off': { title: 'Disable NetBIOS over TCP/IP', method: 'ps', risk: 'advanced', apply: "$adapters=Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE'; foreach($a in $adapters){ try { $a.SetTcpipNetbios(2) | Out-Null } catch {} }; Write-Output 'NetBIOS disabled on IP-enabled adapters.'", revert: "$adapters=Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE'; foreach($a in $adapters){ try { $a.SetTcpipNetbios(0) | Out-Null } catch {} }; Write-Output 'NetBIOS restored to DHCP/default.'" },
+  'ts-ipv6-binding-off': { title: 'Disable IPv6 Binding', method: 'binding', risk: 'advanced', component: 'ms_tcpip6' },
+  'ts-lldp-binding-off': { title: 'Disable LLDP Binding', method: 'binding', risk: 'safe', component: 'ms_lldp' },
+  'ts-ms-multiplexor-off': { title: 'Disable Microsoft Adapter Multiplexor', method: 'binding', risk: 'safe', component: 'ms_implat' },
+  'ts-file-printer-sharing-off': { title: 'Disable File and Printer Sharing', method: 'binding', risk: 'moderate', component: 'ms_server' },
+  'ts-client-ms-networks-off': { title: 'Disable Client for Microsoft Networks', method: 'binding', risk: 'advanced', component: 'ms_msclient' },
+  'ts-lltd-responder-off': { title: 'Disable LLTD Responder', method: 'binding', risk: 'safe', component: 'ms_rspndr' },
+  'ts-lltd-mapper-off': { title: 'Disable LLTD Mapper', method: 'binding', risk: 'safe', component: 'ms_lltdio' },
+  'ts-flush-dns': { title: 'Flush DNS', method: 'action', risk: 'safe', action: 'flushDNS' },
+  'ts-reset-winsock': { title: 'Reset Winsock', method: 'action', risk: 'moderate', action: 'resetWinsock' },
+  'ts-reset-tcpip': { title: 'Reset TCP/IP', method: 'action', risk: 'moderate', action: 'resetTCPIP' },
+  'ts-renew-ip': { title: 'Renew IP', method: 'action', risk: 'safe', action: 'renewIP' },
+
+  // Services
+  'ts-vpn-stack-off': { title: 'VPN Stack', method: 'serviceGroup', risk: 'advanced', services: ['RasMan','RasAuto','SstpSvc','IKEEXT','PolicyAgent'] },
+  'ts-wifi-stack-off': { title: 'Wi-Fi Stack', method: 'serviceGroup', risk: 'advanced', services: ['WlanSvc','Wcmsvc'] },
+  'ts-bluetooth-stack-off': { title: 'Bluetooth Stack', method: 'serviceGroup', risk: 'moderate', services: ['bthserv','BTAGService','BthAvctpSvc'] },
+  'ts-printing-stack-off': { title: 'Printing & Scanning', method: 'serviceGroup', risk: 'moderate', services: ['Spooler','stisvc','PrintNotify'] },
+  'ts-diagnostics-stack-off': { title: 'Diagnostics & Telemetry Services', method: 'serviceGroup', risk: 'moderate', services: ['DiagTrack','dmwappushservice','WerSvc'] },
+
+  // Graphics Driver - safe/service/cache/profile-supported only
+  'ts-clear-directx-cache': { title: 'Clear DirectX Shader Cache', method: 'action', risk: 'safe', action: 'clearDirectXCache' },
+  'ts-clear-nvidia-cache': { title: 'Clear NVIDIA Shader Cache', method: 'action', risk: 'safe', action: 'clearNvidiaCache' },
+  'ts-clear-amd-cache': { title: 'Clear AMD Shader Cache', method: 'action', risk: 'safe', action: 'clearAmdCache' },
+  'ts-amd-ulps-off': { title: 'Disable AMD ULPS', method: 'amdUlps', risk: 'advanced' },
+  'ts-nvidia-services-off': { title: 'Disable Nonessential NVIDIA Services', method: 'serviceDetect', risk: 'advanced', patterns: ['NvTelemetry','NvContainerLocalSystem','NvModuleTracker','Nvvad_WaveExtensible','NvVhci'] },
+  'ts-amd-services-off': { title: 'Disable AMD Logging Services', method: 'serviceDetect', risk: 'advanced', patterns: ['amdlog','AMD Log Utility','AMDRyzenMasterDriver'] },
+  'ts-nvidia-hidden-power': { title: 'NVIDIA Hidden Power Saving Features', method: 'nvidiaPowerMizer', risk: 'experimental', restart: true },
+  'ts-radeon-hidden-power': { title: 'Radeon Hidden Power / Clock Gating', method: 'amdHiddenPower', risk: 'experimental', restart: true },
+
+  // Security & BIOS Lab
+  'ts-smartscreen-off': { title: 'Disable SmartScreen', method: 'registry', risk: 'experimental', entries: [
+    ['HKLM','SOFTWARE\\Policies\\Microsoft\\Windows\\System','EnableSmartScreen','REG_DWORD',0],
+    ['HKLM','SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer','SmartScreenEnabled','REG_SZ','Off'],
+    ['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\AppHost','EnableWebContentEvaluation','REG_DWORD',0]
+  ]},
+  'ts-smart-app-control-manual': { title: 'Disable Smart App Control', method: 'manual', risk: 'manual', reason: 'Smart App Control can be one-way depending on Windows state. Ryvane will show a manual warning only.' },
+  'ts-mark-of-web-off': { title: 'Disable Mark of the Web for Future Files', method: 'registry', risk: 'experimental', partialRevert: true, entries: [['HKCU','Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments','SaveZoneInformation','REG_DWORD',1]]},
+  'ts-hypervisor-off': { title: 'Disable Hypervisor Launch', method: 'bcd', risk: 'experimental', restart: true, bcd: [['hypervisorlaunchtype','off']]},
+  'ts-vbs-off': { title: 'Disable VBS', method: 'registryBcd', risk: 'experimental', restart: true, entries: [['HKLM','SYSTEM\\CurrentControlSet\\Control\\DeviceGuard','EnableVirtualizationBasedSecurity','REG_DWORD',0]], bcd: [['hypervisorlaunchtype','off']]},
+  'ts-hvci-off': { title: 'Disable Memory Integrity', method: 'registry', risk: 'advanced', restart: true, entries: [['HKLM','SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity','Enabled','REG_DWORD',0]]},
+  'ts-dep-nx-off': { title: 'Disable DEP / NX', method: 'bcd', risk: 'experimental', restart: true, bcd: [['nx','AlwaysOff']]},
+  'ts-cfg-off': { title: 'Disable Control Flow Guard', method: 'mitigation', risk: 'experimental', mitigation: 'CFG' },
+  'ts-aslr-off': { title: 'Disable ASLR', method: 'mitigation', risk: 'experimental', mitigation: 'ForceRelocateImages,BottomUp,HighEntropy' },
+  'ts-sehop-off': { title: 'Disable SEHOP', method: 'mitigation', risk: 'experimental', mitigation: 'SEHOP' },
+  'ts-elam-toggle': { title: 'Disable ELAM Drivers', method: 'bcd', risk: 'experimental', restart: true, bcd: [['disableelamdrivers','yes']], warning: 'Disables Early Launch Anti-Malware at boot. This can reduce boot-time protection and may trigger BitLocker recovery on protected systems.' },
+  'ts-isolated-context-toggle': { title: 'Disable Isolated Context', method: 'bcd', risk: 'experimental', restart: true, bcd: [['isolatedcontext','No']], warning: 'Attempts to change the BCD isolated context option. Unsupported Windows builds will reject this and Ryvane will not mark it applied.' },
+  'ts-inmemory-kernel-toggle': { title: 'Disable In-Memory Kernel Mitigations', method: 'bcd', risk: 'experimental', restart: true, bcd: [['mitigationoptions','Disable']], warning: 'Disables Windows boot mitigation options where accepted. This is a high-risk security trade-off and requires reboot.' },
+
+  // BIOS/Firmware manual entries
+  'ts-bios-cstates': { title: 'Disable CPU C-States', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'BIOS option only. Requires vendor/board-specific firmware interface or manual BIOS guide.' },
+  'ts-bios-package-cstate': { title: 'Package C-State Limit', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'BIOS option only. No universal Windows command.' },
+  'ts-bios-c1e': { title: 'C1E Support', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'BIOS option only. No universal Windows command.' },
+  'ts-bios-pcie-clock-gating': { title: 'Disable PCIe Clock Gating', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'Firmware/vendor-specific only.' },
+  'ts-bios-energy-efficient-pstate': { title: 'Disable Energy Efficient P-State', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'Firmware/vendor-specific only.' },
+  'ts-bios-aspm': { title: 'Disable ASPM', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'Firmware option; Windows-side PCIe Link State is separate and already handled in Power settings.' },
+  'ts-bios-ltr': { title: 'Disable LTR', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'Motherboard-specific firmware option.' },
+  'ts-bios-race-to-halt': { title: 'Disable Race To Halt', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'Firmware/vendor-specific only.' },
+  'ts-bios-xhci-handoff': { title: 'Disable XHCI Hand-off', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'BIOS option only; manual guide required.' },
+  'ts-bios-virtualization': { title: 'Disable Virtualization in BIOS', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'BIOS option only. Windows can disable Hypervisor/VBS, but VT-x/SVM itself is firmware controlled.' },
+  'ts-bios-pci-delay': { title: 'Enable PCI Delay Optimization', method: 'firmwareProbe', risk: 'experimental', restart: true, reason: 'Firmware/vendor-specific only.' }
+};
+
+function makeRegistryPS(tweak, backupPath, apply = true) {
+  const entriesJson = JSON.stringify(tweak.entries || []);
+  return `
+$backupPath='${psQuote(backupPath)}'
+$entries = '${psQuote(entriesJson)}' | ConvertFrom-Json
+function To-PSPath([string]$hive,[string]$sub) { if ($hive -eq 'HKLM') { return 'HKLM:\\' + $sub } else { return 'HKCU:\\' + $sub } }
+function Get-RegValue([string]$hive,[string]$sub,[string]$name) {
+  $p = To-PSPath $hive $sub
+  $res = [ordered]@{ hive=$hive; path=$sub; name=$name; keyExists=(Test-Path $p); valueExists=$false; type=$null; data=$null }
+  if (Test-Path $p) { try { $it = Get-ItemProperty -Path $p -Name $name -EA Stop; $res.valueExists=$true; $res.data=$it.$name } catch {} }
+  return $res
+}
+if (${apply ? '$true' : '$false'}) {
+  $backup = @()
+  foreach($e in $entries) { $backup += Get-RegValue $e[0] $e[1] $e[2] }
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null
+  $backup | ConvertTo-Json -Depth 6 | Set-Content -Path $backupPath -Encoding UTF8
+  ${tweak.actionBefore || ''}
+  foreach($e in $entries) {
+    $p = To-PSPath $e[0] $e[1]
+    New-Item -Path $p -Force | Out-Null
+    $name = [string]$e[2]; $type = [string]$e[3]; $data = $e[4]
+    if ($name -eq '(default)') { $name = '(default)' }
+    try { New-ItemProperty -Path $p -Name $name -Value $data -PropertyType ($type -replace 'REG_','') -Force | Out-Null } catch { Set-ItemProperty -Path $p -Name $name -Value $data -Force }
+  }
+  Write-Output 'Applied and backed up registry values.'
+} else {
+  if (!(Test-Path $backupPath)) { Write-Output 'No backup found for this tweak.'; exit 2 }
+  $backup = Get-Content $backupPath -Raw | ConvertFrom-Json
+  foreach($b in $backup) {
+    $p = To-PSPath $b.hive $b.path
+    if ($b.valueExists -eq $true) {
+      New-Item -Path $p -Force | Out-Null
+      try { Set-ItemProperty -Path $p -Name $b.name -Value $b.data -Force } catch {}
+    } else {
+      if (Test-Path $p) { try { Remove-ItemProperty -Path $p -Name $b.name -Force -EA SilentlyContinue } catch {} }
+    }
+  }
+  Write-Output 'Restored registry values from backup.'
+}`;
+}
+
+function backupFileFor(id) { ensureDir(BACKUP_DIR); return path.join(BACKUP_DIR, `${safeId(id)}.json`); }
+
+function makeServicePS(tweak, backupPath, apply = true, detectPatterns = false) {
+  const services = JSON.stringify(tweak.services || []);
+  const patterns = JSON.string
