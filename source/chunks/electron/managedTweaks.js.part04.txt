@@ -1,0 +1,52 @@
+y=true) {
+  return `
+$backupPath='${psQuote(backupPath)}'
+${makeDriverValueBackupHelpersPS()}
+$base='HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+$setOne=@('PP_SclkDeepSleepDisable','DisablePowerGating','DisableClockGating','DisableDrmdmaPowerGating','DisableSAMUPowerGating','DisableUVDPowerGating','DisableVCEPowerGating','DisableGFXPowerGating')
+if (${apply ? '$true' : '$false'}) {
+  $targets=@()
+  Get-ChildItem $base -EA SilentlyContinue | ForEach-Object {
+    $key=$_.PsPath
+    $props=Get-ItemProperty -Path $key -EA SilentlyContinue
+    $desc=([string]$props.DriverDesc + ' ' + [string]$props.ProviderName + ' ' + [string]$props.MatchingDeviceId)
+    if($desc -match 'AMD|Radeon|VEN_1002'){ $targets += $key }
+  }
+  if($targets.Count -eq 0){ Write-Output 'No AMD/Radeon display driver registry profile was detected.'; exit 2 }
+  $backup=@()
+  foreach($path in $targets){ foreach($name in $setOne){ $backup += Get-ValueState $path $name } }
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null
+  $backup | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $backupPath
+  foreach($path in $targets){ foreach($name in $setOne){ New-ItemProperty -Path $path -Name $name -PropertyType DWord -Value 1 -Force | Out-Null } }
+  Write-Output ('AMD/Radeon hidden power and clock-gating profile updated. Driver profiles changed=' + $targets.Count + '. Restart or reload the driver for full effect.')
+} else {
+  if(!(Test-Path $backupPath)){ Write-Output 'No AMD/Radeon hidden power backup found.'; exit 2 }
+  $items=Get-Content $backupPath -Raw | ConvertFrom-Json
+  foreach($item in $items){ Restore-ValueState $item }
+  Write-Output 'AMD/Radeon hidden power and clock-gating profile restored from backup.'
+}
+`;
+}
+
+function makeAmdUlpsPS(backupPath, apply=true) {
+  return `
+$backupPath='${psQuote(backupPath)}'
+$base='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'
+if (${apply ? '$true' : '$false'}) {
+  $items=@()
+  Get-ChildItem $base -EA SilentlyContinue | ForEach-Object {
+    foreach($n in @('EnableUlps','EnableUlps_NA')){ try{ $v=Get-ItemProperty -Path $_.PsPath -Name $n -EA Stop; $items += [ordered]@{ path=$_.PsPath; name=$n; value=$v.$n }; Set-ItemProperty -Path $_.PsPath -Name $n -Type DWord -Value 0 -Force }catch{} }
+  }
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null; $items | ConvertTo-Json -Depth 5 | Set-Content $backupPath -Encoding UTF8
+  Write-Output ('AMD ULPS disabled where found. Values changed=' + $items.Count)
+} else {
+  if(!(Test-Path $backupPath)){ Write-Output 'No AMD ULPS backup found.'; exit 2 }
+  $items=Get-Content $backupPath -Raw | ConvertFrom-Json
+  foreach($i in $items){ try{ Set-ItemProperty -Path $i.path -Name $i.name -Type DWord -Value ([int]$i.value) -Force }catch{} }
+  Write-Output 'AMD ULPS restored from backup.'
+}`;
+}
+
+function getManagedCatalog() { return TWEAKS; }
+
+module.exports = { applyManagedTweak, revertManagedTweak, getManagedCatalog, runFirmwareCompatibilityScan };
