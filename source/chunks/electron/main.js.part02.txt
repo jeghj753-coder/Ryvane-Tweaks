@@ -1,0 +1,444 @@
+  adminStatusCached = !!adminMode
+
+  return new Promise((resolve) => {
+    mainWindow = new BrowserWindow({
+      width: 1440,
+      height: 820,
+      minWidth: 1200,
+      minHeight: 700,
+      frame: false,
+      backgroundColor: '#0d0d0f',  // matches --bg-base, prevents white flash
+      icon: fs.existsSync(path.join(__dirname, 'icon.ico')) ? path.join(__dirname, 'icon.ico') : (fs.existsSync(path.join(__dirname, '../build/icon.ico')) ? path.join(__dirname, '../build/icon.ico') : undefined),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        backgroundThrottling: true,    // performance: let Electron throttle when minimized/backgrounded
+        spellcheck: false,
+        enableWebSQL: false,
+      },
+      show: false,
+      paintWhenInitiallyHidden: true,  // start painting before show()
+    })
+
+    if (isDev) {
+      mainWindow.loadURL('http://localhost:3000')
+    } else {
+      mainWindow.loadFile(path.join(app.getAppPath(), 'build', 'index.html'))
+    }
+
+    // Resolve only after first paint is ready — eliminates blink during splash handoff.
+    mainWindow.once('ready-to-show', () => {
+      mainWindow?.webContents.send('admin-status', adminMode)
+      if (pendingToolOAuthCode) {
+        mainWindow?.webContents.send('tool-oauth-code', pendingToolOAuthCode)
+        pendingToolOAuthCode = null
+      }
+      if (showOnReady) {
+        setTimeout(() => {
+          mainWindow?.show()
+          resolve(mainWindow)
+        }, 120)
+      } else {
+        mainWindow?.setOpacity?.(0)
+        resolve(mainWindow)
+      }
+    })
+
+    mainWindow.on('closed', () => { mainWindow = null })
+  })
+}
+
+// ─── Direct Startup (Splash Removed) ─────────────────────────
+// Splash/pre-launch animation has been fully removed. The app now opens the main window directly.
+
+// ─── Auto Updater ─────────────────────────────────────────
+function setupAutoUpdater() {
+  if (isDev) return
+
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.allowPrerelease = false
+  autoUpdater.allowDowngrade = false
+  // Important: update access is not tied to Free/Premium licensing.
+  // Code-signature verification is disabled in package.json because this app is currently unsigned.
+
+  autoUpdater.on('checking-for-update', () => {
+    emitUpdateStatus({ status: 'checking', message: 'Checking for updates...' })
+  })
+  autoUpdater.on('update-available', (info) => {
+    emitUpdateStatus({
+      status: 'available',
+      message: `New update available: v${info?.version || ''}`,
+      version: info?.version || null, info
+    })
+  })
+  autoUpdater.on('update-not-available', (info) => {
+    emitUpdateStatus({
+      status: 'not-available',
+      message: 'You are using the latest version.',
+      version: info?.version || null
+    })
+  })
+  autoUpdater.on('download-progress', (progress) => {
+    emitUpdateStatus(buildDownloadProgressPayload(progress))
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    emitUpdateStatus({
+      status: 'downloaded',
+      message: 'Update downloaded. Restart to install.',
+      version: info?.version || null
+    })
+  })
+  autoUpdater.on('error', (err) => {
+    emitUpdateStatus({
+      status: 'error', message: err?.message || 'Update error.'
+    })
+  })
+}
+
+function scheduleStartupUpdateCheck() {
+  // Disabled update check to prevent update locks
+}
+
+// ─── IPC: Persistent UI/tweak states ───────────────────────
+ipcMain.handle('persistent-state-get', () => {
+  try {
+    return { success: true, data: uiStateStore.getAll(), path: uiStateStore.path }
+  } catch (e) {
+    return { success: false, data: {}, message: e?.message || 'Persistent state read failed.' }
+  }
+})
+
+ipcMain.handle('persistent-state-set', (_, key, value) => {
+  try {
+    return { success: uiStateStore.setKey(key, value) }
+  } catch (e) {
+    return { success: false, message: e?.message || 'Persistent state save failed.' }
+  }
+})
+
+ipcMain.handle('persistent-state-delete', (_, key) => {
+  try {
+    return { success: uiStateStore.deleteKey(key) }
+  } catch (e) {
+    return { success: false, message: e?.message || 'Persistent state delete failed.' }
+  }
+})
+
+ipcMain.handle('persistent-state-merge', (_, data) => {
+  try {
+    return { success: uiStateStore.merge(data || {}) }
+  } catch (e) {
+    return { success: false, message: e?.message || 'Persistent state merge failed.' }
+  }
+})
+
+// ─── IPC: Tweaks & Scripts ────────────────────────────────
+const { TWEAK_MAP, TWEAK_REVERT_MAP, DATA_TWEAKS, FREE_DATA_TWEAK_IDS, createBackup, listBackups, restoreBackup, createRestorePoint, listRestorePoints, restoreToPoint, runSystemScan, pingGameServers, runFirmwareCompatibilityScan } = require('./tweaks')
+const { listPowerPlans, setPowerPlan, ensureUltimatePerformance, activateUltimatePerformance, revertDefaultPowerPlan } = require('./powerPlans')
+
+ipcMain.handle('run-script', async () => ({
+  success: false,
+  output: 'Direct script execution is disabled. Use a registered Ryvane Tweaks tweak ID.'
+}))
+ipcMain.handle('run-single-script', async () => ({
+  success: false,
+  output: 'Direct script execution is disabled. Use a registered Ryvane Tweaks tweak ID.'
+}))
+ipcMain.handle('run-tweak', async (_, key, arg) => {
+  const action = arg && typeof arg === 'object' ? String(arg.action || 'apply') : 'apply'
+  const value = arg && typeof arg === 'object' && Object.prototype.hasOwnProperty.call(arg, 'value') ? arg.value : arg
+
+  if (action === 'revert') {
+    const tweakKey = String(key || '')
+    const fn = TWEAK_REVERT_MAP[tweakKey]
+    if (!fn) {
+      // Legacy rows merged into the new pages can use their original data-tweak revert script.
+      // This fixes errors like: "No revert action registered for tweak: fast-shutdown".
+      if (DATA_TWEAKS && DATA_TWEAKS[tweakKey]?.revertScript && TWEAK_MAP.revertDataTweak) {
+        try { return await TWEAK_MAP.revertDataTweak(tweakKey) } catch (e) { return { success: false, output: e.message } }
+      }
+      return { success: false, output: `No revert action registered for tweak: ${key}` }
+    }
+    try { return await fn(value) } catch (e) { return { success: false, output: e.message } }
+  }
+
+  if (isPremiumRequiredForTweak(key, value) && !hasPremiumAccess()) {
+    const message = 'Ryvane Tweaks license required for this tweak.'
+    return { success: false, locked: true, message, output: message }
+  }
+
+  const tweakKey = String(key || '')
+  const fn = TWEAK_MAP[tweakKey]
+  if (!fn) {
+    // Direct legacy data-tweak IDs are supported so old merged rows remain fully apply/revert capable.
+    if (DATA_TWEAKS && DATA_TWEAKS[tweakKey]?.script && TWEAK_MAP.applyDataTweak) {
+      try { return await TWEAK_MAP.applyDataTweak(tweakKey) } catch (e) { return { success: false, output: e.message } }
+    }
+    return { success: false, output: `Unknown: ${key}` }
+  }
+  try { return await fn(value) } catch (e) { return { success: false, output: e.message } }
+})
+
+// ─── IPC: Power Plans ─────────────────────────────────────
+ipcMain.handle('power-plans-list', async () => {
+  if (!hasPremiumAccess()) return { success: false, locked: true, plans: [], message: 'Ryvane Tweaks license required for Power Plans.' }
+  return listPowerPlans()
+})
+ipcMain.handle('power-plan-set', async (_, guid) => {
+  if (!hasPremiumAccess()) return { success: false, locked: true, message: 'Ryvane Tweaks license required for Power Plans.' }
+  return setPowerPlan(guid)
+})
+ipcMain.handle('power-plan-ensure-ultimate', async () => {
+  if (!hasPremiumAccess()) return { success: false, locked: true, message: 'Ryvane Tweaks license required for Power Plans.' }
+  return ensureUltimatePerformance()
+})
+ipcMain.handle('power-plan-activate-ultimate', async () => {
+  if (!hasPremiumAccess()) return { success: false, locked: true, message: 'Ryvane Tweaks license required for Power Plans.' }
+  return activateUltimatePerformance()
+})
+ipcMain.handle('power-plan-revert-default', async () => {
+  if (!hasPremiumAccess()) return { success: false, locked: true, message: 'Ryvane Tweaks license required for Power Plans.' }
+  return revertDefaultPowerPlan()
+})
+
+ipcMain.handle('run-scan', async () => runSystemScan())
+ipcMain.handle('ping-test', async () => pingGameServers())
+ipcMain.handle('firmware-scan', async () => { try { return await runFirmwareCompatibilityScan(); } catch (e) { return { success:false, message:e?.message || 'Firmware scan failed.' }; } })
+ipcMain.handle('backup-create', async (_, name) => createBackup(name))
+ipcMain.handle('backup-list', async () => listBackups())
+ipcMain.handle('backup-restore', async (_, fp) => restoreBackup(fp))
+ipcMain.handle('create-restore-point', async (_, name) => {
+  try { return await createRestorePoint(name); }
+  catch (error) { return { success: false, message: error?.message || 'Restore point could not be created.' }; }
+})
+ipcMain.handle('restore-point-list', async () => {
+  try { return await listRestorePoints(); }
+  catch (error) { return { success: false, message: error?.message || 'Restore points could not be loaded.', points: [] }; }
+})
+ipcMain.handle('restore-point-apply', async (_, sequenceNumber) => {
+  try { return await restoreToPoint(sequenceNumber); }
+  catch (error) { return { success: false, message: error?.message || 'System Restore could not be started.' }; }
+})
+
+function getHardwareProfilePath() {
+  return path.join(app.getPath('userData'), 'tweakshift-hardware-profile.json')
+}
+
+function readHardwareProfileCache() {
+  try {
+    const fp = getHardwareProfilePath()
+    if (!fs.existsSync(fp)) return null
+    const cached = JSON.parse(fs.readFileSync(fp, 'utf8'))
+    if (!cached || typeof cached !== 'object') return null
+    return cached
+  } catch { return null }
+}
+
+function saveHardwareProfileCache(profile) {
+  try { fs.writeFileSync(getHardwareProfilePath(), JSON.stringify(profile, null, 2), 'utf8') } catch {}
+}
+
+async function scanHardwareProfileOnce(force = false) {
+  if (!force) {
+    const cached = readHardwareProfileCache()
+    if (cached?.cpu || cached?.gpu || cached?.ram) return { ...cached, cached: true }
+  }
+
+  const cpu = os.cpus()?.[0]?.model || 'Unknown CPU'
+  const ramBytes = os.totalmem() || 0
+  const ramGbRaw = ramBytes / 1073741824
+  const ram = ramBytes ? `${Math.round(ramGbRaw)} GB RAM` : 'Unknown RAM'
+  let gpu = 'Unknown GPU'
+
+  try {
+    if (si?.graphics) {
+      const gpuData = await si.graphics()
+      const controllers = Array.isArray(gpuData?.controllers) ? gpuData.controllers : []
+      const selected = controllers.find(g => /nvidia|geforce|rtx|gtx|amd|radeon|intel/i.test(`${g.vendor || ''} ${g.model || ''}`)) || controllers[0]
+      if (selected) gpu = selected.model || selected.vendor || gpu
+    }
+  } catch {}
+
+  const profile = {
+    system: `${os.type()} ${os.release()}`.trim(),
+    cpu,
+    gpu,
+    ram,
+    ramBytes,
+    scannedAt: new Date().toISOString(),
+    cached: false
+  }
+
+  saveHardwareProfileCache(profile)
+  return profile
+}
+
+ipcMain.handle('get-system-info', async () => {
+  try { return await scanHardwareProfileOnce(false) }
+  catch { return { system: 'Unavailable', cpu: 'Unavailable', gpu: 'Unavailable', ram: 'Unavailable', cached: false } }
+})
+
+ipcMain.handle('get-hardware-profile', async () => {
+  try { return await scanHardwareProfileOnce(false) }
+  catch { return { system: 'Unavailable', cpu: 'Unavailable', gpu: 'Unavailable', ram: 'Unavailable', cached: false } }
+})
+
+ipcMain.handle('refresh-hardware-profile', async () => {
+  try { return await scanHardwareProfileOnce(true) }
+  catch { return { system: 'Unavailable', cpu: 'Unavailable', gpu: 'Unavailable', ram: 'Unavailable', cached: false } }
+})
+
+ipcMain.handle('get-memory-info', async () => {
+  try {
+    const { totalMem, usedMem, ram } = getMemoryFast()
+    return { ram, ramUsedGB: (usedMem / 1e9).toFixed(1), ramTotalGB: (totalMem / 1e9).toFixed(0) }
+  } catch { return { ram: 0, ramUsedGB: '0.0', ramTotalGB: '0' } }
+})
+
+ipcMain.handle('get-process-count', async () => {
+  return new Promise(resolve => {
+    exec('tasklist /fo csv /nh', { timeout: 5000, windowsHide: true }, (err, stdout) => {
+      if (err) return resolve({ success: false, count: 0 })
+      const count = String(stdout || '').split(/\r?\n/).filter(Boolean).length
+      resolve({ success: true, count })
+    })
+  })
+})
+
+ipcMain.handle('get-startup-items', async () => {
+  return new Promise(resolve => {
+    exec('powershell -NoProfile -Command "Get-CimInstance Win32_StartupCommand | Select-Object Name,Command,Location | ConvertTo-Json -Compress"',
+      { timeout: 8000 }, (err, stdout) => {
+        try { resolve({ success: true, items: JSON.parse(stdout || '[]') }) }
+        catch { resolve({ success: true, items: [] }) }
+      })
+  })
+})
+
+ipcMain.handle('get-processes', async () => {
+  return new Promise(resolve => {
+    exec('powershell -NoProfile -Command "Get-Process | Sort-Object CPU -Descending | Select-Object -First 20 Name,CPU,WorkingSet64 | ConvertTo-Json -Compress"',
+      { timeout: 6000 }, (err, stdout) => {
+        try { resolve({ success: true, processes: JSON.parse(stdout || '[]') }) }
+        catch { resolve({ success: true, processes: [] }) }
+      })
+  })
+})
+
+ipcMain.handle('get-device-id', () => getDeviceId())
+ipcMain.handle('get-license-status', async () => verifyStoredToolSession())
+ipcMain.handle('save-license-status', () => false)
+ipcMain.handle('clear-license-status', () => {
+  try { licenseStore.delete('licenseStatus'); return true }
+  catch { return false }
+})
+ipcMain.handle('debug-license-info', () => ({
+  storeAvailable: !!store,
+  storePath: licenseStore.path,
+  hasValidLicense: hasPremiumAccess(),
+  currentData: getAccessStatusSync(),
+  legacyData: getValidLicenseStatus()
+}))
+
+ipcMain.handle('tool-start-oauth', async (_event, provider) => {
+  try {
+    const safeProvider = String(provider || '').toLowerCase() === 'discord' ? 'discord' : 'google'
+    const url = `${TWEAKSHIFT_AUTH_API_URL}/api/auth/${safeProvider}?redirect=${encodeURIComponent(TOOL_OAUTH_CALLBACK_URL)}`
+    await shell.openExternal(url)
+    return { success: true }
+  } catch (error) {
+    return { success: false, message: error?.message || 'Could not open browser for social login.' }
+  }
+})
+
+ipcMain.handle('tool-login', async (_event, payload = {}) => {
+  try {
+    const body = {
+      email: payload.email,
+      password: payload.password,
+      force: payload.force === true,
+      product_key: TWEAKSHIFT_PRODUCT_KEY,
+      device_fingerprint: getDeviceId(),
+      device_name: os.hostname(),
+    }
+    const data = await postAuth('/api/tool/login', body)
+    if (data.success) {
+      const session = storeAccountSession(data)
+      return { ...data, status: session }
+    }
+    return data
+  } catch (error) {
+    const data = error?.response?.data
+    return data || { success: false, message: error?.message || 'Could not sign in.' }
+  }
+})
+
+ipcMain.handle('tool-oauth-login', async (_event, payload = {}) => {
+  try {
+    const body = {
+      code: payload.code,
+      provider: payload.provider,
+      force: payload.force === true,
+      product_key: TWEAKSHIFT_PRODUCT_KEY,
+      device_fingerprint: getDeviceId(),
+      device_name: os.hostname(),
+    }
+    const data = await postAuth('/api/tool/oauth-login', body)
+    if (data.success) {
+      const session = storeAccountSession(data)
+      return { ...data, status: session }
+    }
+    return data
+  } catch (error) {
+    const data = error?.response?.data
+    return data || { success: false, message: error?.message || 'Could not complete social login.' }
+  }
+})
+
+ipcMain.handle('tool-verify-access', async () => verifyStoredToolSession())
+
+ipcMain.handle('tool-logout', async () => {
+  const account = getStoredAccountSession()
+  try {
+    if (account) {
+      await postAuth('/api/tool/logout', { session_token: account.session_token }, {
+        Authorization: `Bearer ${account.tool_token}`,
+        'X-Tool-Session-Token': account.session_token,
+      }).catch(() => null)
+    }
+  } finally {
+    clearAccountSession()
+  }
+  return { success: true, message: 'Signed out successfully.' }
+})
+
+ipcMain.handle('deactivate-license', async () => {
+  try {
+    const axios = require('axios')
+    const current = licenseStore.get('licenseStatus') || {}
+    const licenseKey = current.licenseKey || current.license_key || ''
+    const deviceId = getDeviceId()
+
+    if (!licenseKey) {
+      licenseStore.delete('licenseStatus')
+      return { success: true, message: 'License removed locally.' }
+    }
+
+    const response = await axios.post(
+      `${LICENSE_SERVER_URL}/api/deactivate-license`,
+      {
+        licenseKey,
+        deviceId,
+        source: current.source || current.provider || '',
+        freemiusUid: current.freemiusUid || current.uid || '',
+        freemiusInstallId: current.freemiusInstallId || current.installId || current.install_id || '',
+        freemiusInstallApiToken: current.freemiusInstallApiToken || current.installApiToken || current.install_api_token || '',
+        freemiusLicenseId: current.freemiusLicenseId || current.licenseId || current.license_id || '',
+      },
+      { timeout: 70000 }
+    )
+
+    const data = response.data || { success: true, message: 'License deactivated.' }
+    if (data.success === false) {
