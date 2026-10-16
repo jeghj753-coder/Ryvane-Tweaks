@@ -1,0 +1,105 @@
+      return {
+        ...data,
+        message: data.message || 'License deactivation failed. Your local license was kept so you can retry.',
+      }
+    }
+
+    licenseStore.delete('licenseStatus')
+    return data
+  } catch (err) {
+    console.error('[License Deactivate Error]', {
+      code: err?.code,
+      message: err?.message,
+      status: err?.response?.status,
+      data: err?.response?.data,
+    })
+    if (err.response?.data) return { ...err.response.data, localCleared: false }
+    return { success: false, localCleared: false, message: 'Could not reach deactivation server. License was not removed, so the key stays safe on this PC.' }
+  }
+})
+
+ipcMain.handle('verify-license', async (_, licenseKey) => {
+  try {
+    const axios = require('axios')
+    const cleanKey = String(licenseKey || '').trim()
+    if (!cleanKey) return { success: false, message: 'Please enter a license key.' }
+
+    const deviceId = getDeviceId()
+    const response = await axios.post(
+      `${LICENSE_SERVER_URL}/api/verify-license`,
+      { licenseKey: cleanKey, deviceId, deviceName: os.hostname(), appVersion: app.getVersion() },
+      { timeout: 70000 }
+    )
+
+    const data = response.data || {}
+    if (!data.success) return data
+
+    const stored = buildStoredLicense(data, cleanKey)
+    licenseStore.set('licenseStatus', stored)
+    return { ...stored, success: true }
+  } catch (err) {
+    console.error('[License Verify Error]', {
+      code: err?.code,
+      message: err?.message,
+      status: err?.response?.status,
+      data: err?.response?.data,
+    })
+    if (err.response?.data) return err.response.data
+    return { success: false, message: 'Could not reach activation server. Check your internet connection.' }
+  }
+})
+
+ipcMain.handle('get-latest-update-status', () => latestUpdateStatus)
+
+ipcMain.handle('check-for-updates', async () => {
+  try {
+    if (isDev) return { success: false, message: 'Update checking is available in the installed Ryvane Tweaks app.' }
+    await autoUpdater.checkForUpdates()
+    return { success: true }
+  } catch (error) { return { success: false, message: error?.message || 'Failed to check for updates.' } }
+})
+ipcMain.handle('download-update', async () => {
+  try {
+    if (isDev) return { success: false, message: 'Update checking is available in the installed Ryvane Tweaks app.' }
+    await autoUpdater.downloadUpdate()
+    return { success: true }
+  } catch (error) { return { success: false, message: error?.message || 'Failed to download update.' } }
+})
+ipcMain.handle('install-update', async () => {
+  try {
+    if (isDev) return { success: false, message: 'Update checking is available in the installed Ryvane Tweaks app.' }
+    autoUpdater.quitAndInstall(false, true)
+    return { success: true }
+  } catch (error) { return { success: false, message: error?.message || 'Failed to install update.' } }
+})
+
+ipcMain.handle('get-admin-status', () => adminStatusCached)
+ipcMain.handle('open-external', (_, url) => shell.openExternal(url))
+ipcMain.on('window-minimize', () => mainWindow?.minimize())
+ipcMain.on('window-close', () => mainWindow?.close())
+ipcMain.on('win-minimize', () => mainWindow?.minimize())
+ipcMain.on('win-maximize', () => { mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow?.maximize() })
+ipcMain.on('win-close', () => mainWindow?.close())
+
+app.whenReady().then(() => {
+  try {
+    if (isDev) app.setAsDefaultProtocolClient(TOOL_OAUTH_PROTOCOL, process.execPath, [path.resolve(process.argv[1] || '')])
+    else app.setAsDefaultProtocolClient(TOOL_OAUTH_PROTOCOL)
+  } catch (error) { console.error('[Protocol Registration Error]', error) }
+
+  FALLBACK_STORE_PATH = path.join(app.getPath('userData'), 'tweakshift-license.json')
+  FALLBACK_STATE_PATH = path.join(app.getPath('userData'), 'tweakshift-ui-state.json')
+
+  try {
+    shell.openExternal('https://discord.gg/Xf2k8bHNq')
+  } catch (e) {}
+
+  setupAutoUpdater()
+
+  createWindow(true).then(() => {
+    scheduleStartupUpdateCheck()
+  })
+  setInterval(() => { verifyStoredToolSession().catch(() => {}) }, 5 * 60 * 1000)
+})
+
+app.on('window-all-closed', () => app.quit())
