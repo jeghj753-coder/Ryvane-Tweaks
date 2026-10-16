@@ -1,0 +1,258 @@
+ify(tweak.patterns || []);
+  return `
+$backupPath='${psQuote(backupPath)}'
+$names = @(${JSON.parse(services).map(s=>`'${psQuote(s)}'`).join(',')})
+$patterns = @(${JSON.parse(patterns).map(s=>`'${psQuote(s)}'`).join(',')})
+if (${detectPatterns ? '$true' : '$false'}) {
+  $found = @()
+  foreach($pat in $patterns){ Get-Service -EA SilentlyContinue | Where-Object { $_.Name -like "*$pat*" -or $_.DisplayName -like "*$pat*" } | ForEach-Object { $found += $_.Name } }
+  $names = $found | Select-Object -Unique
+}
+function Get-StartMode($n) { try { (Get-CimInstance Win32_Service -Filter "Name='$n'" -EA SilentlyContinue).StartMode } catch { $null } }
+if (${apply ? '$true' : '$false'}) {
+  $backup=@()
+  foreach($n in $names){ $svc=Get-Service -Name $n -EA SilentlyContinue; if($svc){ $backup += [ordered]@{ name=$n; exists=$true; status=[string]$svc.Status; startMode=(Get-StartMode $n) } } }
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null
+  $backup | ConvertTo-Json -Depth 5 | Set-Content $backupPath -Encoding UTF8
+  foreach($b in $backup){ try{ Stop-Service -Name $b.name -Force -EA SilentlyContinue }catch{}; try{ Set-Service -Name $b.name -StartupType Disabled -EA SilentlyContinue }catch{}; try{ sc.exe config $b.name start= disabled | Out-Null }catch{} }
+  Write-Output ('Services disabled: ' + ($backup.Count))
+} else {
+  if(!(Test-Path $backupPath)){ Write-Output 'No service backup found.'; exit 2 }
+  $backup=Get-Content $backupPath -Raw | ConvertFrom-Json
+  foreach($b in $backup){
+    $mode=[string]$b.startMode
+    $st = if($mode -eq 'Auto'){'Automatic'} elseif($mode -eq 'Manual'){'Manual'} elseif($mode -eq 'Disabled'){'Disabled'} else {'Manual'}
+    try{ Set-Service -Name $b.name -StartupType $st -EA SilentlyContinue }catch{}
+    if([string]$b.status -eq 'Running'){ try{ Start-Service -Name $b.name -EA SilentlyContinue }catch{} }
+  }
+  Write-Output 'Services restored from backup.'
+}`;
+}
+
+function makeTasksPS(tweak, backupPath, apply = true) {
+  return `
+$backupPath='${psQuote(backupPath)}'
+$tasks = '${psQuote(JSON.stringify(tweak.tasks || []))}' | ConvertFrom-Json
+if (${apply ? '$true' : '$false'}) {
+  $backup=@()
+  foreach($t in $tasks){ $task=Get-ScheduledTask -TaskPath $t[0] -TaskName $t[1] -EA SilentlyContinue; if($task){ $backup += [ordered]@{ path=$t[0]; name=$t[1]; state=[string]$task.State } ; Disable-ScheduledTask -TaskPath $t[0] -TaskName $t[1] -EA SilentlyContinue | Out-Null } }
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null; $backup | ConvertTo-Json -Depth 5 | Set-Content $backupPath -Encoding UTF8
+  Write-Output ('Scheduled tasks disabled: ' + $backup.Count)
+} else {
+  if(!(Test-Path $backupPath)){ Write-Output 'No task backup found.'; exit 2 }
+  $backup=Get-Content $backupPath -Raw | ConvertFrom-Json
+  foreach($b in $backup){ if([string]$b.state -ne 'Disabled'){ Enable-ScheduledTask -TaskPath $b.path -TaskName $b.name -EA SilentlyContinue | Out-Null } }
+  Write-Output 'Scheduled tasks restored from backup.'
+}`;
+}
+
+function makeBindingPS(tweak, backupPath, apply = true) {
+  return `
+$backupPath='${psQuote(backupPath)}'
+$component='${psQuote(tweak.component)}'
+if (${apply ? '$true' : '$false'}) {
+  $bindings = Get-NetAdapterBinding -Name '*' -AllBindings -EA SilentlyContinue | Where-Object { $_.ComponentID -eq $component }
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null
+  $bindings | Select-Object Name,InterfaceDescription,ComponentID,Enabled | ConvertTo-Json -Depth 5 | Set-Content $backupPath -Encoding UTF8
+  foreach($b in $bindings){ if($b.Enabled){ Disable-NetAdapterBinding -Name $b.Name -ComponentID $component -EA SilentlyContinue | Out-Null } }
+  Write-Output ('Disabled binding ' + $component + ' on ' + ($bindings.Count) + ' adapter(s).')
+} else {
+  if(!(Test-Path $backupPath)){ Write-Output 'No binding backup found.'; exit 2 }
+  $backup=Get-Content $backupPath -Raw | ConvertFrom-Json
+  foreach($b in $backup){ if($b.Enabled -eq $true){ Enable-NetAdapterBinding -Name $b.Name -ComponentID $b.ComponentID -EA SilentlyContinue | Out-Null } else { Disable-NetAdapterBinding -Name $b.Name -ComponentID $b.ComponentID -EA SilentlyContinue | Out-Null } }
+  Write-Output 'Network bindings restored from backup.'
+}`;
+}
+
+function makeBcdPS(tweak, backupPath, apply = true) {
+  const setPairs = tweak.bcd || [];
+  const delValues = tweak.bcdDelete || [];
+  return `
+$backupPath='${psQuote(backupPath)}'
+$sets = '${psQuote(JSON.stringify(setPairs))}' | ConvertFrom-Json
+$dels = '${psQuote(JSON.stringify(delValues))}' | ConvertFrom-Json
+function BcdText { (& bcdedit.exe /enum '{current}' 2>&1) -join "\`n" }
+if (${apply ? '$true' : '$false'}) {
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null
+  BcdText | Set-Content $backupPath -Encoding UTF8
+  foreach($p in $sets){ & bcdedit.exe /set '{current}' $p[0] $p[1] | Out-Null; if($LASTEXITCODE -ne 0){ Write-Output ('This Windows build rejected BCD option: ' + $p[0]); exit 2 } }
+  foreach($v in $dels){ & bcdedit.exe /deletevalue '{current}' $v 2>$null | Out-Null }
+  Write-Output 'Boot setting applied. Restart required.'
+} else {
+  if(!(Test-Path $backupPath)){ Write-Output 'No BCD backup found; removing target values as safe fallback.' }
+  foreach($p in $sets){ & bcdedit.exe /deletevalue '{current}' $p[0] 2>$null | Out-Null }
+  foreach($v in $dels){ & bcdedit.exe /deletevalue '{current}' $v 2>$null | Out-Null }
+  Write-Output 'BCD target values removed/restored to Windows default fallback. Restart required.'
+}`;
+}
+
+function makeMitigationPS(tweak, backupPath, apply = true) {
+  return `
+$backupPath='${psQuote(backupPath)}'
+if (${apply ? '$true' : '$false'}) {
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null
+  try { Get-ProcessMitigation -RegistryConfigFilePath $backupPath } catch { '' | Set-Content $backupPath }
+  try { Set-ProcessMitigation -System -Disable ${tweak.mitigation} -EA SilentlyContinue; Write-Output 'Process mitigation changed.' } catch { Write-Output 'Process mitigation command failed or unsupported.'; exit 2 }
+} else {
+  if(Test-Path $backupPath){ try { Set-ProcessMitigation -PolicyFilePath $backupPath -EA SilentlyContinue; Write-Output 'Process mitigation restored from backup.' } catch { Write-Output 'Restore mitigation failed; manual restore may be required.'; exit 2 } }
+  else { Write-Output 'No mitigation backup found.'; exit 2 }
+}`;
+}
+
+function makeSleepStudyPS(backupPath, apply = true) {
+  return `
+$backupPath='${psQuote(backupPath)}'
+$taskMatches = @()
+try { $taskMatches = Get-ScheduledTask -EA SilentlyContinue | Where-Object { $_.TaskPath -like '*SleepStudy*' -or $_.TaskName -like '*SleepStudy*' -or $_.TaskPath -like '*Power Efficiency Diagnostics*' } } catch {}
+$regPath='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\WMI\\Autologger\\SleepStudy'
+if (${apply ? '$true' : '$false'}) {
+  $backup=[ordered]@{ tasks=@(); regExists=(Test-Path $regPath); regStart=$null }
+  foreach($t in $taskMatches){ $backup.tasks += [ordered]@{ path=$t.TaskPath; name=$t.TaskName; state=[string]$t.State } }
+  if(Test-Path $regPath){ try { $backup.regStart=(Get-ItemProperty -Path $regPath -Name Start -EA SilentlyContinue).Start } catch {} }
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null
+  $backup | ConvertTo-Json -Depth 6 | Set-Content $backupPath -Encoding UTF8
+  foreach($t in $taskMatches){ try { Disable-ScheduledTask -TaskPath $t.TaskPath -TaskName $t.TaskName -EA SilentlyContinue | Out-Null } catch {} }
+  if(Test-Path $regPath){ try { Set-ItemProperty -Path $regPath -Name Start -Type DWord -Value 0 -EA SilentlyContinue } catch {} }
+  Write-Output ('Sleep Study logging reduced. Tasks changed: ' + $taskMatches.Count)
+} else {
+  if(!(Test-Path $backupPath)){ Write-Output 'No Sleep Study backup found.'; exit 2 }
+  $backup=Get-Content $backupPath -Raw | ConvertFrom-Json
+  foreach($b in @($backup.tasks)){
+    if([string]$b.state -ne 'Disabled'){ try { Enable-ScheduledTask -TaskPath $b.path -TaskName $b.name -EA SilentlyContinue | Out-Null } catch {} }
+  }
+  if($backup.regExists -eq $true -and $null -ne $backup.regStart){ try { Set-ItemProperty -Path $regPath -Name Start -Type DWord -Value ([int]$backup.regStart) -EA SilentlyContinue } catch {} }
+  Write-Output 'Sleep Study logging restored from backup.'
+}`;
+}
+
+function makeActionPS(tweak) {
+  switch (tweak.action) {
+    case 'restartExplorer': return `Stop-Process -Name explorer -Force -EA SilentlyContinue; Start-Process explorer.exe; Write-Output 'Explorer restarted.'`;
+    case 'flushDNS': return `ipconfig /flushdns | Out-Null; Write-Output 'DNS resolver cache flushed.'`;
+    case 'resetWinsock': return `netsh winsock reset | Out-Null; Write-Output 'Winsock reset. Restart recommended.'`;
+    case 'resetTCPIP': return `netsh int ip reset | Out-Null; netsh int tcp reset | Out-Null; Write-Output 'TCP/IP reset. Restart recommended.'`;
+    case 'renewIP': return `ipconfig /release | Out-Null; ipconfig /renew | Out-Null; Write-Output 'IP lease renewed.'`;
+    case 'clearDirectXCache': return `Remove-Item "$env:LOCALAPPDATA\\D3DSCache\\*" -Recurse -Force -EA SilentlyContinue; Remove-Item "$env:LOCALAPPDATA\\Microsoft\\DirectX Shader Cache\\*" -Recurse -Force -EA SilentlyContinue; Write-Output 'DirectX shader cache cleaned.'`;
+    case 'clearNvidiaCache': return `Remove-Item "$env:LOCALAPPDATA\\NVIDIA\\DXCache\\*" -Recurse -Force -EA SilentlyContinue; Remove-Item "$env:LOCALAPPDATA\\NVIDIA\\GLCache\\*" -Recurse -Force -EA SilentlyContinue; Write-Output 'NVIDIA shader cache cleaned.'`;
+    case 'clearAmdCache': return `Remove-Item "$env:LOCALAPPDATA\\AMD\\DxCache\\*" -Recurse -Force -EA SilentlyContinue; Remove-Item "$env:LOCALAPPDATA\\AMD\\GLCache\\*" -Recurse -Force -EA SilentlyContinue; Write-Output 'AMD shader cache cleaned.'`;
+    default: return `Write-Output 'Unknown action.'; exit 2`;
+  }
+}
+
+async function applyManagedTweak(input) {
+  const id = typeof input === 'string' ? input : input?.id;
+  const tweak = TWEAKS[id];
+  if (!tweak) return { success: false, output: `Unknown managed tweak: ${id}` };
+  if (['manual','driverManual'].includes(tweak.method)) return { success: false, manualOnly: true, output: tweak.reason || 'This tweak requires manual configuration.' };
+  const backupPath = backupFileFor(id);
+  let script = '';
+  if (['registry','registryAction','registryService','registryBcd'].includes(tweak.method)) script = makeRegistryPS(tweak, backupPath, true);
+  else if (tweak.method === 'serviceGroup') script = makeServicePS(tweak, backupPath, true, false);
+  else if (tweak.method === 'serviceDetect') script = makeServicePS(tweak, backupPath, true, true);
+  else if (tweak.method === 'tasks') script = makeTasksPS(tweak, backupPath, true);
+  else if (tweak.method === 'binding') script = makeBindingPS(tweak, backupPath, true);
+  else if (['bcd','bcdDelete'].includes(tweak.method)) script = makeBcdPS(tweak, backupPath, true);
+  else if (tweak.method === 'mitigation') script = makeMitigationPS(tweak, backupPath, true);
+  else if (tweak.method === 'ps') script = `${tweak.apply || ''}`;
+  else if (tweak.method === 'cmd') script = `cmd.exe /d /c "${String(tweak.apply || '').replace(/"/g,'\\"')}"`;
+  else if (tweak.method === 'action') script = makeActionPS(tweak);
+  else if (tweak.method === 'amdUlps') script = makeAmdUlpsPS(backupPath, true);
+  else if (tweak.method === 'nvidiaPowerMizer') script = makeNvidiaPowerMizerPS(backupPath, true);
+  else if (tweak.method === 'amdHiddenPower') script = makeAmdHiddenPowerPS(backupPath, true);
+  else if (tweak.method === 'sleepStudy') script = makeSleepStudyPS(backupPath, true);
+  else if (tweak.method === 'firmwareProbe') return { success: false, unsupported: true, title: tweak.title, output: 'This BIOS option was scanned, but your motherboard does not expose a safe Windows-writable firmware profile for this setting. Ryvane only applies this when your motherboard exposes a safe Windows-writable firmware profile. Use a supported vendor firmware profile or change it inside BIOS/UEFI.' };
+  else return { success: false, output: `Unsupported method: ${tweak.method}` };
+
+  if (tweak.method === 'registryBcd' && tweak.bcd) script += '\n' + makeBcdPS(tweak, backupPath + '.bcd.txt', true);
+  if (tweak.method === 'registryService' && tweak.services) script += '\n' + makeServicePS({ services: tweak.services }, backupPath + '.services.json', true, false);
+  const res = await runPS(script, tweak.method === 'action' ? 70000 : 90000);
+  return { ...res, title: tweak.title, risk: RISK[tweak.risk] || tweak.risk, requiresRestart: !!tweak.restart, partialRevert: !!tweak.partialRevert };
+}
+
+async function revertManagedTweak(input) {
+  const id = typeof input === 'string' ? input : input?.id;
+  const tweak = TWEAKS[id];
+  if (!tweak) return { success: false, output: `Unknown managed tweak: ${id}` };
+  if (['manual','driverManual'].includes(tweak.method)) return { success: false, manualOnly: true, output: tweak.reason || 'This setting needs manual restore from Windows or BIOS/UEFI.' };
+  if (tweak.method === 'firmwareProbe') return { success: true, unsupported: true, output: 'No firmware change was applied from Ryvane, so there is nothing to restore from the app.' };
+  if (tweak.method === 'action') return { success: true, output: 'This is a one-time action. There is no persistent setting to revert.' };
+  const backupPath = backupFileFor(id);
+  let script = '';
+  if (['registry','registryAction','registryService','registryBcd'].includes(tweak.method)) script = makeRegistryPS(tweak, backupPath, false);
+  else if (tweak.method === 'serviceGroup') script = makeServicePS(tweak, backupPath, false, false);
+  else if (tweak.method === 'serviceDetect') script = makeServicePS(tweak, backupPath, false, true);
+  else if (tweak.method === 'tasks') script = makeTasksPS(tweak, backupPath, false);
+  else if (tweak.method === 'binding') script = makeBindingPS(tweak, backupPath, false);
+  else if (['bcd','bcdDelete'].includes(tweak.method)) script = makeBcdPS(tweak, backupPath, false);
+  else if (tweak.method === 'mitigation') script = makeMitigationPS(tweak, backupPath, false);
+  else if (tweak.method === 'ps') script = `${tweak.revert || 'Write-Output "No revert command registered."'}`;
+  else if (tweak.method === 'cmd') script = `cmd.exe /d /c "${String(tweak.revert || '').replace(/"/g,'\\"')}"`;
+  else if (tweak.method === 'amdUlps') script = makeAmdUlpsPS(backupPath, false);
+  else if (tweak.method === 'nvidiaPowerMizer') script = makeNvidiaPowerMizerPS(backupPath, false);
+  else if (tweak.method === 'amdHiddenPower') script = makeAmdHiddenPowerPS(backupPath, false);
+  else if (tweak.method === 'sleepStudy') script = makeSleepStudyPS(backupPath, false);
+  else return { success: false, output: `Unsupported method: ${tweak.method}` };
+  if (tweak.method === 'registryBcd' && tweak.bcd) script += '\n' + makeBcdPS(tweak, backupPath + '.bcd.txt', false);
+  if (tweak.method === 'registryService' && tweak.services) script += '\n' + makeServicePS({ services: tweak.services }, backupPath + '.services.json', false, false);
+  const res = await runPS(script, 90000);
+  return { ...res, title: tweak.title, risk: RISK[tweak.risk] || tweak.risk, requiresRestart: !!tweak.restart };
+}
+
+function makeDriverValueBackupHelpersPS() {
+  return `
+function Get-ValueState($path,$name){
+  try{
+    $p = Get-ItemProperty -Path $path -Name $name -EA Stop
+    return [ordered]@{ path=$path; name=$name; existed=$true; value=$p.$name }
+  } catch {
+    return [ordered]@{ path=$path; name=$name; existed=$false; value=$null }
+  }
+}
+function Restore-ValueState($item){
+  if($item.existed){
+    New-Item -Path $item.path -Force | Out-Null
+    Set-ItemProperty -Path $item.path -Name $item.name -Value $item.value -Force
+  } else {
+    Remove-ItemProperty -Path $item.path -Name $item.name -Force -EA SilentlyContinue
+  }
+}
+`;
+}
+
+function makeNvidiaPowerMizerPS(backupPath, apply=true) {
+  return `
+$backupPath='${psQuote(backupPath)}'
+${makeDriverValueBackupHelpersPS()}
+$base='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'
+$names=@('PowerMizerEnable','PowerMizerLevel','PowerMizerLevelAC','PerfLevelSrc')
+if (${apply ? '$true' : '$false'}) {
+  $targets=@()
+  Get-ChildItem $base -EA SilentlyContinue | ForEach-Object {
+    $key=$_.PsPath
+    $props=Get-ItemProperty -Path $key -EA SilentlyContinue
+    $desc=([string]$props.DriverDesc + ' ' + [string]$props.ProviderName + ' ' + [string]$props.MatchingDeviceId)
+    if($desc -match 'NVIDIA|VEN_10DE'){ $targets += $key }
+  }
+  if($targets.Count -eq 0){ Write-Output 'No NVIDIA display driver registry profile was detected.'; exit 2 }
+  $backup=@()
+  foreach($path in $targets){ foreach($name in $names){ $backup += Get-ValueState $path $name } }
+  New-Item -ItemType Directory -Path (Split-Path $backupPath) -Force | Out-Null
+  $backup | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $backupPath
+  foreach($path in $targets){
+    New-Item -Path $path -Force | Out-Null
+    New-ItemProperty -Path $path -Name 'PowerMizerEnable' -PropertyType DWord -Value 0 -Force | Out-Null
+    New-ItemProperty -Path $path -Name 'PowerMizerLevel' -PropertyType DWord -Value 1 -Force | Out-Null
+    New-ItemProperty -Path $path -Name 'PowerMizerLevelAC' -PropertyType DWord -Value 1 -Force | Out-Null
+    New-ItemProperty -Path $path -Name 'PerfLevelSrc' -PropertyType DWord -Value 8738 -Force | Out-Null
+  }
+  Write-Output ('NVIDIA hidden power-saving profile updated. Driver profiles changed=' + $targets.Count + '. Restart or reload the driver for full effect.')
+} else {
+  if(!(Test-Path $backupPath)){ Write-Output 'No NVIDIA hidden power backup found.'; exit 2 }
+  $items=Get-Content $backupPath -Raw | ConvertFrom-Json
+  foreach($item in $items){ Restore-ValueState $item }
+  Write-Output 'NVIDIA hidden power-saving profile restored from backup.'
+}
+`;
+}
+
+function makeAmdHiddenPowerPS(backupPath, appl
